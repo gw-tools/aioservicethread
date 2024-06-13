@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import logging
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 
 THREAD_NOT_ALIVE_ERROR = """thread: {name}
@@ -58,7 +58,7 @@ class AioServiceThread(threading.Thread):
     _aloop: asyncio.AbstractEventLoop = None
     _astop_event: asyncio.Event = None
 
-    def __init__(self, name: str | None = None) -> None:
+    def __init__(self, name: Optional[str] = None) -> None:
         super().__init__(name=name, daemon=False)
 
         self.logger = logging.getLogger(f"{self.__class__.__name__}.{self.name}")
