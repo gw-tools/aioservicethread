@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aioservicethread"
+version = "0.1.0"
+authors = [
+  { name="darkhaniop", email="darkhaniop@google.com" },
+]
+description = "An abstract class for asyncio services that run in their dedicated threads."
+readme = "README.md"
+requires-python = ">=3.9, <4"
+classifiers = [
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Framework :: AsyncIO",
+]
+
+dependencies = [
+]
+
+[project.urls]
+"Homepage" = "https://github.com/gw-tools/aioservicethread"
