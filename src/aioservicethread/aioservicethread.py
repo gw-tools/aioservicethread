@@ -212,8 +212,9 @@ class AioServiceThread(threading.Thread):
         return task
 
     async def _cancel_tasks(self):
+        self.log({"event_type": "cancel_tasks_starting"}, level=logging.DEBUG)
+
         for task in self._atasks:
-            self.log(f"canceling {task}")
             if task.done():
                 continue
             task.cancel()
@@ -222,7 +223,7 @@ class AioServiceThread(threading.Thread):
             except asyncio.CancelledError:
                 pass
 
-        self.log("canceled all tasks")
+        self.log({"event_type": "cancel_tasks_done"}, level=logging.DEBUG)
 
     def cancel_thread_tasks(self) -> None:
         @self._threadsafe
