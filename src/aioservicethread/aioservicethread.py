@@ -57,9 +57,12 @@ class AioServiceThread(threading.Thread):
 
     _aloop: asyncio.AbstractEventLoop = None
     _astop_event: asyncio.Event = None
+    _atasks: list[asyncio.Task]
 
     def __init__(self, name: Optional[str] = None) -> None:
         super().__init__(name=name, daemon=False)
+
+        self._atasks = []
 
         self.logger = logging.getLogger(f"{self.__class__.__name__}.{self.name}")
         self.logger.setLevel(logging.getLogger(__name__).level)
@@ -134,6 +137,31 @@ class AioServiceThread(threading.Thread):
             request_stop()
             self.join()
 
+    def _create_task(self, coro, *, name=None) -> asyncio.Task:
+        task = asyncio.create_task(coro, name=name)
+        self._atasks.append(task)
+        return task
+
+    async def _cancel_tasks(self):
+        for task in self._atasks:
+            self.log(f"canceling {task}")
+            if task.done():
+                continue
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        self.log("canceled all tasks")
+
+    def cancel_thread_tasks(self) -> None:
+        @self._threadsafe
+        def cancel_tasks():
+            asyncio.create_task(self._cancel_tasks(), name="_cancel_tasks")
+
+        cancel_tasks()
+
     def _wait_for_aloop_initialization(self):
         if self.is_alive() and not self._astop_event.is_set():
             timeout_s = self.init_timeout
@@ -180,7 +208,10 @@ class AioServiceThread(threading.Thread):
 
         await self._astop_event.wait()
 
-        await arun_task
+        try:
+            await arun_task
+        except asyncio.CancelledError:
+            self.logger.exception({"event_type": "arun_got_canceled"}, stack_info=True)
 
         self.log({"event_type": "thread_done"}, level=logging.DEBUG)
 
