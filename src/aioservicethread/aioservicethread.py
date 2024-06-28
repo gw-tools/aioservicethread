@@ -1,4 +1,5 @@
 import asyncio
+import ctypes
 from dataclasses import dataclass
 import logging
 import threading
@@ -59,6 +60,15 @@ class AioServiceThread(threading.Thread):
     _astop_event: asyncio.Event = None
     _atasks: list[asyncio.Task]
 
+    _force_stop_timeout: float = 11.25
+    _force_stop_sentinel: Exception
+
+    class InjectedException(Exception):
+        initial_exc: Exception = None
+
+        def __str__(self) -> str:
+            return f"<{self.__class__.__name__} initial_exc={repr(self.initial_exc)}>"
+
     def __init__(self, name: Optional[str] = None) -> None:
         super().__init__(name=name, daemon=False)
 
@@ -76,7 +86,14 @@ class AioServiceThread(threading.Thread):
             self.logger.log(level, msg)
 
     def run(self) -> None:
-        asyncio.run(self._arun_proxy())
+        self._force_stop_sentinel = Exception("force_stop_sentinel")
+        try:
+            asyncio.run(self._arun_proxy())
+        except self.InjectedException as exc:
+            if exc.initial_exc == self._force_stop_sentinel:
+                self.log({"event_type": "thread_force_stopped"})
+            else:
+                raise exc
 
     @classmethod
     def threadsafe_method(cls, func) -> Callable:
@@ -127,15 +144,67 @@ class AioServiceThread(threading.Thread):
 
         return wrapper
 
-    def stop_and_join(self) -> None:
+    def _raise_in_thread(self, exc: object):
+        # An example for raising an exception in a thread was shown in:
+        #   https://gist.github.com/liuw/2407154
+        #
+        # This method is used to force stop a service that did not exit after a
+        # graceful stop event.
+
+        class _ExcWrapper(self.InjectedException):
+            def __init__(self, *args: object) -> None:
+                super().__init__(*args)
+                self.initial_exc = exc
+
+        if not self.is_alive():
+            return
+
+        thread_id = self.ident
+
+        ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_long(self.ident), ctypes.py_object(_ExcWrapper)
+        )
+
+        if ret == 0:
+            raise ValueError(f"Invalid thread thread_id={thread_id}")
+        if ret > 1:
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, 0)
+            raise SystemError(
+                f"PyThreadState_SetAsyncExc failed ret={ret} thread_id={thread_id}"
+            )
+
+        self.log(
+            {"event_type": "exc_injected", "exc": str(exc)},
+            level=logging.DEBUG,
+        )
+
+    def stop_and_join(
+        self, timeout: float = None, then_force_stop: bool = True
+    ) -> None:
 
         @self._threadsafe
         def request_stop():
             self._astop_event.set()
 
-        if self.is_alive():
-            request_stop()
-            self.join()
+        if not self.is_alive():
+            return
+
+        request_stop()
+        self.join(timeout=timeout)
+
+        if not self.is_alive():
+            return
+
+        if then_force_stop:
+            self._raise_in_thread(self._force_stop_sentinel)
+            self.join(timeout=self._force_stop_timeout)
+
+            if self.is_alive():
+                msg = (
+                    f"Force stopping thread '{self.name}' failed after "
+                    f"{self._force_stop_timeout} seconds"
+                )
+                raise RuntimeError(msg)
 
     def _create_task(self, coro, *, name=None) -> asyncio.Task:
         task = asyncio.create_task(coro, name=name)
@@ -163,7 +232,7 @@ class AioServiceThread(threading.Thread):
         cancel_tasks()
 
     def _wait_for_aloop_initialization(self):
-        if self.is_alive() and not self._astop_event.is_set():
+        if self.is_alive():  # and not self._astop_event.is_set():
             timeout_s = self.init_timeout
             if not self.service_running.wait(timeout_s):
                 error_msg = THREADSAFE_CALL_ERROR.replace("{name}", self.name)
@@ -197,7 +266,7 @@ class AioServiceThread(threading.Thread):
             self.logger.warning(error_msg)
 
     async def _arun_proxy(self) -> None:
-        self.log({"event_type": "thread_starting"}, level=logging.DEBUG)
+        self.log({"event_type": "arun_starting"}, level=logging.DEBUG)
 
         self._aloop = asyncio.get_event_loop()
         self._astop_event = asyncio.Event()
@@ -213,7 +282,7 @@ class AioServiceThread(threading.Thread):
         except asyncio.CancelledError:
             self.logger.exception({"event_type": "arun_got_canceled"}, stack_info=True)
 
-        self.log({"event_type": "thread_done"}, level=logging.DEBUG)
+        self.log({"event_type": "arun_done"}, level=logging.DEBUG)
 
     async def _arun(self):
         pass
