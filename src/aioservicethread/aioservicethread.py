@@ -77,9 +77,10 @@ class AioServiceThread(threading.Thread):
 
     @classmethod
     def threadsafe_method(cls, func) -> Callable:
-        no_result = object()
 
         def wrapper(self: cls, *args, **kwargs) -> Any:
+            # pylint: disable=protected-access
+
             self._wait_for_aloop_initialization()
 
             response = _WrappedResponse(threading.Event())
@@ -87,7 +88,7 @@ class AioServiceThread(threading.Thread):
             def func_w_embedded_args() -> None:
                 try:
                     response.result = func(self, *args, **kwargs)
-                except BaseException as exc:
+                except BaseException as exc:  # pylint: disable=broad-exception-caught
                     response.exception = exc
                 response.done_event.set()
 
@@ -101,28 +102,25 @@ class AioServiceThread(threading.Thread):
         return wrapper
 
     def _threadsafe(self, func) -> Callable:
-        no_result = object()
 
         def wrapper(*args, **kwargs):
             self._wait_for_aloop_initialization()
 
-            response = {"result": no_result}
-            done_event = threading.Event()
+            response = _WrappedResponse(threading.Event())
 
             def func_w_embedded_args():
                 try:
-                    response["result"] = func(*args, **kwargs)
-                except Exception as exc:
-                    response["exception"] = exc
-                done_event.set()
+                    response.result = func(*args, **kwargs)
+                except BaseException as exc:  # pylint: disable=broad-exception-caught
+                    response.exception = exc
+                response.done_event.set()
 
             self._aloop.call_soon_threadsafe(func_w_embedded_args)
-            done_event.wait()
+            response.done_event.wait()
 
-            result = response.get("result")
-            if result is no_result:
-                raise response["exception"]
-            return result
+            if response.exception is not None:
+                raise response.exception
+            return response.result
 
         return wrapper
 
